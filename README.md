@@ -1,4 +1,4 @@
-ansible-modules-cloudsigma
+ansible-cloudsigma-modules
 ==========================
 
 Ansible modules for cloudsigma
