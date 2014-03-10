@@ -7,12 +7,93 @@ short_description: create, delete, start or stop a server in cloudsigma cloud
 description:
   - . This module has a dependency on cloudsigma >= 0.3
 options:
- 
+   uuid:
+     description:
+      - Server uuid
+     required: False
+   status:
+     description:
+       -
+     default: 'running'
+     choices: ['present','running','stopped']
+
+   datacenter:
+     description:
+       -
+     default: 'zrh'
+     choices: ['zrh','wdc','lvs']
+   cpu:
+     description:
+       -
+     default: 2.0
+   mem:
+     description:
+       -
+     default: 2.0
+   drive:
+     description:
+       -
+   nics:
+     description:
+       -
+   metas:
+     description:
+       -
+
 requirements: [ "cloudsigma" ]
 author: Julien DAUPHANT
 '''
 
 EXAMPLES = '''
+- local_action:
+    module: cloudsigma_server
+    uuid: yourUUID
+    status: 'running'
+
+- name: create server
+  local_action:
+      module: cloudsigma_server
+      status: 'present'
+      name: 'Server Ansible 1'
+      cpu: 1.5
+      mem: 1.0
+      drives:
+        - new_drive:
+            name: 'Drive 1'
+            size: 10
+            media: disk
+          device: virtio
+          dev_channel: '0:0'
+        - new_drive:
+            name: 'Drive 2'
+            size: 1
+            media: cdrom
+          device: virtio
+          dev_channel: '0:1'
+        - uuid: driveUUID
+          device: virtio
+          dev_channel: '0:2'
+        - new_drive:
+            name: 'Drive IDE 1'
+            size: 12
+            media: disk
+          device: ide
+          dev_channel: '0:0'
+      nics:
+        - model: virtio
+          vlan: vlanUUID
+        - model: e1000
+          ip_v4_conf:
+            conf: dhcp
+        - model: e1000
+          ip_v4_conf: 
+            conf: static
+            ip: ipUUID
+      meta: 
+      	meta1: test
+        eta2: test2
+      datacenter: zrh
+      vnc_password: "testvnhcpassword"
 
 '''
 try:
@@ -24,6 +105,7 @@ except ImportError, e:
 	print "failed=True msg='failed to import python module: %s'" % e
 	sys.exit(1)
 
+from pprint import pprint
 
 class ClousigmaServer:
 	def __init__(self, module):
@@ -32,7 +114,9 @@ class ClousigmaServer:
 		self.status = self.module.params.pop('status')
 		self.uuid = self.module.params.pop('uuid')
 		self.datacenter = self.module.params.pop('datacenter')
+		self.name = self.module.params.pop('name')
 		self.api_server = cloudsigma.resource.Server("https://"+self.datacenter+".cloudsigma.com/api/2.0/")
+		self.api_drive = cloudsigma.resource.Drive("https://"+self.datacenter+".cloudsigma.com/api/2.0/")
 
 	def start_server(self):
 		self.api_server.start(self.uuid)
@@ -45,8 +129,52 @@ class ClousigmaServer:
 	def current_state(self):
 		return self.api_server.get(self.uuid)['status']
 
+	def create_drive(self,drive):
+		return self.api_drive.create(drive)['uuid']
+
+	def add_drive(self,drive):
+		if 'new_drive' in drive:
+			drive['new_drive']['size'] = drive['new_drive']['size'] * 1024 * 1024 * 1024
+			new_drive_uuid = self.create_drive(drive['new_drive'])
+			del drive['new_drive']
+			drive['drive'] = new_drive_uuid
+		if 'device' not in drive:	
+			drive['device'] = 'virtio' # default value here
+		if 'uuid' in drive:	
+			drive['drive'] = drive['uuid'] 
+			del drive['uuid'] 
+		return drive
+
+	def create_server(self):
+		self.cpu = self.module.params.pop('cpu')
+		self.mem = self.module.params.pop('mem')
+		self.vnc_password = self.module.params.pop('vnc_password')
+		self.meta = self.module.params.pop('meta')
+		self.drives = self.module.params.pop('drives')
+		self.nics = self.module.params.pop('nics')
+		
+		server_drives = []
+		if self.drives != None:
+			for drive in self.drives:
+				server_drives.append(self.add_drive(drive))
+
+		new_server = {'name': self.name,
+					   'cpu': self.cpu*1000,
+					   'mem': self.mem*1024*1024**2,
+					   'vnc_password': self.vnc_password,
+					   'meta': self.meta,
+					   'nics' : self.nics,
+					   'drives': server_drives }
+		created_server = self.api_server.create(new_server)
+		self.uuid = created_server['uuid']
+		self.changed = True
+
 	def __call__(self):
 		result = dict(uuid=self.uuid, status=self.status)
+
+		if self.status in ['present','running', 'stopped']:
+			if self.name != None:
+			   self.create_server()
 
 		if self.status == 'running':
 			if not self.current_state() == 'running':
@@ -55,15 +183,23 @@ class ClousigmaServer:
 			if self.current_state() != 'stopped':
 				self.stop_server()
 
+		result['uuid'] = self.uuid
 		result['changed'] = self.changed
 		return result
 
 
 MODULE_SPECS = dict(
 	argument_spec=dict(
-		uuid=dict(required=True),
-		status=dict(default='running', choices=['running','stopped']),
-		datacenter=dict(default=['zrh'], choices=['zrh','wdc','lvs'])
+		uuid=dict(),
+		status=dict(default='present', choices=['present','running','stopped']),
+		datacenter=dict(default=['zrh'], choices=['zrh','wdc','lvs']),
+		name=dict(),
+		cpu=dict(default=2.0,type='float'),
+		mem=dict(default=2.0,type='float'),
+		drives=dict(type='list'),
+		nics=dict(type='list'),
+		meta=dict(type='dict',default={}),
+		vnc_password=dict()
 	),
 	supports_check_mode=False
 )
@@ -75,7 +211,6 @@ def main():
 		module.fail_json(**result)
 	else:
 		module.exit_json(**result)
-
 
 # import module snippets
 from ansible.module_utils.basic import *
